@@ -230,7 +230,7 @@ def main():
         """)
         
         # Check if we have a code in the URL (for redirect back)
-        query_params = st.query_params()
+        query_params = st.experimental_get_query_params()
         if 'code' in query_params and 'state' in query_params:
             if query_params['state'][0] == st.session_state.auth_state:
                 st.session_state.auth_code = query_params['code'][0]
