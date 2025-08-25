@@ -137,7 +137,7 @@ def send_message(access_token, recipient_urn, message_text, sender_urn):
     return response.status_code == 201, response.text
 
 def main():
-    st.title("💼 LinkedIn Bulk Message Sender")
+    st.title("LinkedIn Bulk Message Sender")
     st.markdown("Send personalized messages to multiple LinkedIn connections")
     
     # Check if credentials are configured
