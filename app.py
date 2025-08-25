@@ -196,7 +196,7 @@ def send_message(access_token, recipient_urn, message_text):
         return False, str(e)
 
 def main():
-    st.title("💼 LinkedIn Bulk Message Sender")
+    st.title(" LinkedIn Bulk Message Sender")
     st.markdown("Send personalized messages to multiple LinkedIn connections")
     
     # Debug toggle
