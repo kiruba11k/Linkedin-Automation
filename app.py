@@ -55,12 +55,11 @@ def get_authorization_url():
         "client_id": LINKEDIN_CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "state": st.session_state.auth_state,
-        "scope": "openid profile email"  # Updated to OpenID Connect scopes
+        "scope": "openid profile email w_member_social"  # Updated to include w_member_social for connection requests
     }
     
     auth_url = f"https://www.linkedin.com/oauth/v2/authorization?{urlencode(params)}"
     return auth_url
-
 
 def get_access_token(authorization_code):
     """Exchange authorization code for access token"""
@@ -94,38 +93,6 @@ def get_access_token(authorization_code):
         st.error(f"Exception getting access token: {str(e)}")
         return None
 
-def create_ugc_post(access_token, user_urn, message_text):
-    """Create a UGC post instead of direct message"""
-    api_url = "https://api.linkedin.com/v2/ugcPosts"
-    
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "X-Restli-Protocol-Version": "2.0.0",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "author": f"urn:li:person:{user_urn}",
-        "lifecycleState": "PUBLISHED",
-        "specificContent": {
-            "com.linkedin.ugc.ShareContent": {
-                "shareCommentary": {
-                    "text": message_text
-                },
-                "shareMediaCategory": "NONE"
-            }
-        },
-        "visibility": {
-            "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
-        }
-    }
-    
-    try:
-        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
-        return response.status_code == 201, response.text
-    except Exception as e:
-        return False, str(e)
-        
 def get_user_info(access_token):
     """Get user information using OpenID Connect endpoint"""
     profile_url = "https://api.linkedin.com/v2/userinfo"
@@ -204,6 +171,9 @@ def get_profile_urn_by_public_url(access_token, public_url):
         
         if response.status_code == 200:
             return response.json().get("id")
+        elif response.status_code == 404:
+            # Profile not found - likely private or doesn't exist
+            return "PRIVATE_PROFILE"
         else:
             st.warning(f"Could not resolve URN for {public_url}: {response.status_code} - {response.text}")
             return None
@@ -244,9 +214,56 @@ def send_message(access_token, recipient_urn, message_text):
         st.error(f"Exception sending message: {str(e)}")
         return False, str(e)
 
+def send_connection_request(access_token, profile_url, message_text):
+    """Send a connection request with a note to a LinkedIn profile"""
+    profile_id = extract_linkedin_id(profile_url)
+    
+    if not profile_id:
+        return False, "Invalid profile URL"
+    
+    # Try to get the recipient URN
+    recipient_urn = get_profile_urn_by_public_url(access_token, profile_url)
+    
+    if recipient_urn == "PRIVATE_PROFILE" or not recipient_urn:
+        # For private profiles, we can't send connection requests via API
+        return False, "Cannot send connection request to private profile via API"
+    
+    # API endpoint for connection invitations
+    api_url = "https://api.linkedin.com/v2/invitation"
+    
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "X-Restli-Protocol-Version": "2.0.0",
+        "Content-Type": "application/json"
+    }
+    
+    # Payload for connection request
+    payload = {
+        "invitee": {
+            "com.linkedin.voyager.growth.invitation.InviteeProfile": {
+                "profileId": recipient_urn
+            }
+        },
+        "message": message_text
+    }
+    
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        st.session_state.debug_info[f'connection_{profile_id}_response'] = {
+            'status': response.status_code,
+            'text': response.text
+        }
+        
+        if response.status_code == 201:
+            return True, "Connection request sent successfully"
+        else:
+            return False, f"Failed to send connection request: {response.text}"
+    except Exception as e:
+        return False, f"Exception sending connection request: {str(e)}"
+
 def main():
     st.title("💼 LinkedIn Bulk Message Sender")
-    st.markdown("Send personalized messages to multiple LinkedIn connections")
+    st.markdown("Send personalized messages or connection requests to multiple LinkedIn profiles")
     
     # Debug toggle
     debug_mode = st.sidebar.checkbox("Debug Mode", value=True)
@@ -303,12 +320,12 @@ def main():
                 
                 if access_token:
                     st.session_state.access_token = access_token
-                    st.success("✅ Successfully authenticated with LinkedIn!")
+                    st.success("Successfully authenticated with LinkedIn!")
                     st.rerun()
                 else:
-                    st.error("❌ Failed to get access token. Please try again.")
+                    st.error(" Failed to get access token. Please try again.")
     else:
-        st.success("✅ Already authenticated with LinkedIn!")
+        st.success("Already authenticated with LinkedIn!")
         if st.button("Logout"):
             st.session_state.access_token = None
             st.session_state.auth_code = None
@@ -356,7 +373,7 @@ def main():
                     st.error("CSV must contain 'profile_url' and 'message' columns")
                     return
                 
-                st.success(f"✅ Successfully loaded {len(df)} recipients")
+                st.success(f"Successfully loaded {len(df)} recipients")
                 st.dataframe(df.head())
                 
                 # Configuration options
@@ -366,6 +383,7 @@ def main():
                 with col1:
                     delay = st.slider("Delay between messages (seconds)", 5, 60, 15)
                     max_messages = st.number_input("Maximum messages to send", 1, 100, 10)
+                    send_connection_requests = st.checkbox("Send connection requests for private profiles", value=True)
                 
                 with col2:
                     test_mode = st.checkbox("Test mode (don't actually send messages)", value=True)
@@ -404,34 +422,64 @@ def main():
                         # Get recipient URN
                         recipient_urn = get_profile_urn_by_public_url(access_token, row['profile_url'])
                         
-                        if recipient_urn:
+                        if recipient_urn == "PRIVATE_PROFILE":
+                            # This is a private profile - can't message directly
+                            if send_connection_requests and not test_mode:
+                                # Try to send a connection request instead
+                                success, response = send_connection_request(
+                                    access_token, 
+                                    row['profile_url'], 
+                                    row['message']
+                                )
+                                action_type = "Connection Request"
+                            else:
+                                success, response = False, "Private profile - cannot message directly"
+                                action_type = "Message"
+                            
+                            results.append({
+                                'profile_url': row['profile_url'],
+                                'status': 'Success' if success else 'Failed',
+                                'action': action_type,
+                                'response': response
+                            })
+                            
+                            if success:
+                                st.success(f"Connection request sent to {row['profile_url']}")
+                            else:
+                                st.error(f" Failed to send connection request to {row['profile_url']}: {response}")
+                                
+                        elif recipient_urn:
                             if test_mode:
                                 success, response = True, "TEST MODE - Message not sent"
                                 st.info(f"TEST: Would send to {row['profile_url']}")
+                                action_type = "Message"
                             else:
                                 success, response = send_message(
                                     access_token, 
                                     recipient_urn, 
                                     row['message']
                                 )
+                                action_type = "Message"
                             
                             results.append({
                                 'profile_url': row['profile_url'],
                                 'status': 'Success' if success else 'Failed',
+                                'action': action_type,
                                 'response': response
                             })
                             
                             if success:
-                                st.success(f"✅ Message sent to {row['profile_url']}")
+                                st.success(f" Message sent to {row['profile_url']}")
                             else:
-                                st.error(f"❌ Failed to send to {row['profile_url']}: {response}")
+                                st.error(f" Failed to send to {row['profile_url']}: {response}")
                         else:
                             results.append({
                                 'profile_url': row['profile_url'],
                                 'status': 'Failed',
+                                'action': 'Message',
                                 'response': 'Could not resolve profile URN'
                             })
-                            st.error(f"❌ Could not resolve URN for {row['profile_url']}")
+                            st.error(f"Could not resolve URN for {row['profile_url']}")
                         
                         # Delay between messages to respect rate limits
                         if not test_mode:
