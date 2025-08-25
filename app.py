@@ -3,8 +3,8 @@ import pandas as pd
 import requests
 import time
 import json
-from urllib.parse import urlencode, quote_plus
-import base64
+from urllib.parse import urlencode, parse_qs, urlparse
+import re
 
 # Set page configuration
 st.set_page_config(
@@ -19,19 +19,32 @@ if 'access_token' not in st.session_state:
     st.session_state.access_token = None
 if 'auth_url' not in st.session_state:
     st.session_state.auth_url = None
+if 'auth_state' not in st.session_state:
+    st.session_state.auth_state = None
+if 'debug_info' not in st.session_state:
+    st.session_state.debug_info = {}
 
 # LinkedIn API configuration
 LINKEDIN_CLIENT_ID = st.secrets.get("LINKEDIN_CLIENT_ID", "")
 LINKEDIN_CLIENT_SECRET = st.secrets.get("LINKEDIN_CLIENT_SECRET", "")
-REDIRECT_URI = "https://lslinkedinbulk.streamlit.app/"  # Update with your actual URL
+REDIRECT_URI = "https://lslinkedinbulk.streamlit.app/"
+
+# Generate a random state for CSRF protection
+def generate_state():
+    import random
+    import string
+    return ''.join(random.choices(string.ascii_letters + string.digits, k=16))
 
 def get_authorization_url():
     """Generate LinkedIn OAuth 2.0 authorization URL"""
+    if not st.session_state.auth_state:
+        st.session_state.auth_state = generate_state()
+    
     params = {
         "response_type": "code",
         "client_id": LINKEDIN_CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
-        "state": "random_state_string",  # Should be a random string for CSRF protection
+        "state": st.session_state.auth_state,
         "scope": "w_member_social w_messages r_liteprofile"
     }
     
@@ -54,12 +67,20 @@ def get_access_token(authorization_code):
         "Content-Type": "application/x-www-form-urlencoded"
     }
     
-    response = requests.post(token_url, data=data, headers=headers)
-    
-    if response.status_code == 200:
-        return response.json().get("access_token")
-    else:
-        st.error(f"Error getting access token: {response.text}")
+    try:
+        response = requests.post(token_url, data=data, headers=headers, timeout=30)
+        st.session_state.debug_info['token_response'] = {
+            'status': response.status_code,
+            'text': response.text
+        }
+        
+        if response.status_code == 200:
+            return response.json().get("access_token")
+        else:
+            st.error(f"Error getting access token: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        st.error(f"Exception getting access token: {str(e)}")
         return None
 
 def get_profile_urn(access_token):
@@ -71,30 +92,49 @@ def get_profile_urn(access_token):
         "X-Restli-Protocol-Version": "2.0.0"
     }
     
-    response = requests.get(profile_url, headers=headers)
-    
-    if response.status_code == 200:
-        return response.json().get("id")
-    else:
-        st.error(f"Error getting profile URN: {response.text}")
+    try:
+        response = requests.get(profile_url, headers=headers, timeout=30)
+        st.session_state.debug_info['profile_response'] = {
+            'status': response.status_code,
+            'text': response.text
+        }
+        
+        if response.status_code == 200:
+            return response.json().get("id")
+        else:
+            st.error(f"Error getting profile URN: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        st.error(f"Exception getting profile URN: {str(e)}")
         return None
 
 def extract_linkedin_id(profile_url):
-    """Extract profile ID from LinkedIn URL"""
-    # Remove query parameters if present
-    clean_url = profile_url.split('?')[0]
-    
-    # Split URL by slashes and get the last part
-    parts = clean_url.rstrip('/').split('/')
-    profile_id = parts[-1]
-    
-    return profile_id
+    """Extract profile ID from LinkedIn URL with better error handling"""
+    try:
+        # Handle different URL formats
+        if 'linkedin.com/in/' not in profile_url:
+            raise ValueError("Not a valid LinkedIn profile URL")
+            
+        # Extract the username part
+        pattern = r'linkedin\.com/in/([^/?]+)'
+        match = re.search(pattern, profile_url)
+        
+        if match:
+            return match.group(1)
+        else:
+            raise ValueError("Could not extract profile ID from URL")
+    except Exception as e:
+        st.error(f"Error extracting LinkedIn ID from {profile_url}: {str(e)}")
+        return None
 
 def get_profile_urn_by_public_url(access_token, public_url):
     """Get member URN using their public profile URL"""
     profile_id = extract_linkedin_id(public_url)
     
-    # Use the Profile API to get URN from public URL
+    if not profile_id:
+        return None
+    
+    # Updated API endpoint - using the newer format
     api_url = f"https://api.linkedin.com/v2/people/(url:https://www.linkedin.com/in/{profile_id})"
     
     headers = {
@@ -103,19 +143,28 @@ def get_profile_urn_by_public_url(access_token, public_url):
     }
     
     params = {
-        "projection": "(id)"
+        "projection": "(id,firstName,lastName)"
     }
     
-    response = requests.get(api_url, headers=headers, params=params)
-    
-    if response.status_code == 200:
-        return response.json().get("id")
-    else:
-        st.warning(f"Could not resolve URN for {public_url}: {response.text}")
+    try:
+        response = requests.get(api_url, headers=headers, params=params, timeout=30)
+        st.session_state.debug_info[f'profile_{profile_id}_response'] = {
+            'status': response.status_code,
+            'text': response.text
+        }
+        
+        if response.status_code == 200:
+            return response.json().get("id")
+        else:
+            st.warning(f"Could not resolve URN for {public_url}: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        st.error(f"Exception getting URN for {public_url}: {str(e)}")
         return None
 
-def send_message(access_token, recipient_urn, message_text, sender_urn):
+def send_message(access_token, recipient_urn, message_text):
     """Send a message to a LinkedIn connection"""
+    # Updated API endpoint
     api_url = "https://api.linkedin.com/v2/messages"
     
     headers = {
@@ -124,21 +173,34 @@ def send_message(access_token, recipient_urn, message_text, sender_urn):
         "Content-Type": "application/json"
     }
     
-    # Construct the message payload
+    # Updated payload structure
     payload = {
         "recipients": [recipient_urn],
         "subject": "Message from LinkedIn Bulk Sender",
-        "body": message_text,
+        "body": {
+            "text": message_text
+        },
         "messageType": "MEMBER_TO_MEMBER"
     }
     
-    response = requests.post(api_url, headers=headers, json=payload)
-    
-    return response.status_code == 201, response.text
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        st.session_state.debug_info[f'message_{recipient_urn}_response'] = {
+            'status': response.status_code,
+            'text': response.text
+        }
+        
+        return response.status_code == 201, response.text
+    except Exception as e:
+        st.error(f"Exception sending message: {str(e)}")
+        return False, str(e)
 
 def main():
-    st.title("LinkedIn Bulk Message Sender")
+    st.title(" LinkedIn Bulk Message Sender")
     st.markdown("Send personalized messages to multiple LinkedIn connections")
+    
+    # Debug toggle
+    debug_mode = st.sidebar.checkbox("Debug Mode", value=False)
     
     # Check if credentials are configured
     if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET:
@@ -147,6 +209,11 @@ def main():
         1. Add your LinkedIn Client ID and Client Secret to Streamlit secrets
         2. Update the REDIRECT_URI variable with your app's URL
         """)
+        
+        if debug_mode:
+            st.write("Current Client ID:", LINKEDIN_CLIENT_ID)
+            st.write("Current Client Secret:", "****" if LINKEDIN_CLIENT_SECRET else "Not set")
+        
         return
     
     # Authentication section
@@ -162,19 +229,33 @@ def main():
         3. Copy the authorization code from the URL and paste it below
         """)
         
-        auth_code = st.text_input("Paste authorization code here:")
+        # Check if we have a code in the URL (for redirect back)
+        query_params = st.experimental_get_query_params()
+        if 'code' in query_params and 'state' in query_params:
+            if query_params['state'][0] == st.session_state.auth_state:
+                st.session_state.auth_code = query_params['code'][0]
+                st.experimental_set_query_params()
+        
+        auth_code = st.text_input("Paste authorization code here:", value=st.session_state.auth_code or "")
         
         if auth_code:
             st.session_state.auth_code = auth_code
-            access_token = get_access_token(auth_code)
-            
-            if access_token:
-                st.session_state.access_token = access_token
-                st.success("Successfully authenticated with LinkedIn!")
-            else:
-                st.error("Failed to get access token. Please try again.")
+            with st.spinner("Exchanging code for access token..."):
+                access_token = get_access_token(auth_code)
+                
+                if access_token:
+                    st.session_state.access_token = access_token
+                    st.success(" Successfully authenticated with LinkedIn!")
+                else:
+                    st.error(" Failed to get access token. Please try again.")
     else:
-        st.success("Already authenticated with LinkedIn!")
+        st.success(" Already authenticated with LinkedIn!")
+        if st.button("Logout"):
+            st.session_state.access_token = None
+            st.session_state.auth_code = None
+            st.session_state.auth_url = None
+            st.session_state.auth_state = None
+            st.experimental_rerun()
     
     # Only show the rest of the app if authenticated
     if st.session_state.access_token:
@@ -184,6 +265,26 @@ def main():
         - `profile_url`: LinkedIn profile URL (e.g., https://www.linkedin.com/in/username)
         - `message`: The personalized message to send
         """)
+        
+        # Download template
+        template_data = {
+            'profile_url': [
+                'https://www.linkedin.com/in/sampleuser1',
+                'https://www.linkedin.com/in/sampleuser2'
+            ],
+            'message': [
+                'Hello, I would like to connect with you.',
+                'Hi, I enjoyed your recent post about...'
+            ]
+        }
+        template_df = pd.DataFrame(template_data)
+        csv = template_df.to_csv(index=False)
+        st.download_button(
+            label="Download CSV Template",
+            data=csv,
+            file_name="linkedin_message_template.csv",
+            mime="text/csv"
+        )
         
         uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
         
@@ -196,7 +297,7 @@ def main():
                     st.error("CSV must contain 'profile_url' and 'message' columns")
                     return
                 
-                st.success(f" Successfully loaded {len(df)} recipients")
+                st.success(f"Successfully loaded {len(df)} recipients")
                 st.dataframe(df.head())
                 
                 # Configuration options
@@ -252,8 +353,7 @@ def main():
                                 success, response = send_message(
                                     access_token, 
                                     recipient_urn, 
-                                    row['message'], 
-                                    sender_urn
+                                    row['message']
                                 )
                             
                             results.append({
@@ -283,6 +383,11 @@ def main():
                     results_df = pd.DataFrame(results)
                     st.dataframe(results_df)
                     
+                    # Calculate success rate
+                    success_count = len(results_df[results_df['status'] == 'Success'])
+                    total_count = len(results_df)
+                    st.metric("Success Rate", f"{success_count}/{total_count} ({success_count/total_count*100:.1f}%)")
+                    
                     # Provide download link for results
                     csv = results_df.to_csv(index=False)
                     st.download_button(
@@ -294,6 +399,11 @@ def main():
                     
             except Exception as e:
                 st.error(f"Error processing CSV file: {str(e)}")
+    
+    # Debug information
+    if debug_mode and st.session_state.debug_info:
+        st.sidebar.header("Debug Information")
+        st.sidebar.json(st.session_state.debug_info)
 
 if __name__ == "__main__":
     main()
