@@ -196,7 +196,7 @@ def send_message(access_token, recipient_urn, message_text):
         return False, str(e)
 
 def main():
-    st.title(" LinkedIn Bulk Message Sender")
+    st.title("💼 LinkedIn Bulk Message Sender")
     st.markdown("Send personalized messages to multiple LinkedIn connections")
     
     # Debug toggle
@@ -230,11 +230,12 @@ def main():
         """)
         
         # Check if we have a code in the URL (for redirect back)
-        query_params = st.experimental_get_query_params()
+        query_params = st.query_params
         if 'code' in query_params and 'state' in query_params:
-            if query_params['state'][0] == st.session_state.auth_state:
-                st.session_state.auth_code = query_params['code'][0]
-                st.experimental_set_query_params()
+            if query_params['state'] == st.session_state.auth_state:
+                st.session_state.auth_code = query_params['code']
+                # Clear the query params
+                st.query_params.clear()
         
         auth_code = st.text_input("Paste authorization code here:", value=st.session_state.auth_code or "")
         
@@ -245,17 +246,18 @@ def main():
                 
                 if access_token:
                     st.session_state.access_token = access_token
-                    st.success(" Successfully authenticated with LinkedIn!")
+                    st.success("Successfully authenticated with LinkedIn!")
                 else:
                     st.error(" Failed to get access token. Please try again.")
     else:
-        st.success(" Already authenticated with LinkedIn!")
+        st.success("Already authenticated with LinkedIn!")
         if st.button("Logout"):
             st.session_state.access_token = None
             st.session_state.auth_code = None
             st.session_state.auth_url = None
             st.session_state.auth_state = None
-            st.experimental_rerun()
+            st.query_params.clear()
+            st.rerun()
     
     # Only show the rest of the app if authenticated
     if st.session_state.access_token:
@@ -297,7 +299,7 @@ def main():
                     st.error("CSV must contain 'profile_url' and 'message' columns")
                     return
                 
-                st.success(f"Successfully loaded {len(df)} recipients")
+                st.success(f" Successfully loaded {len(df)} recipients")
                 st.dataframe(df.head())
                 
                 # Configuration options
