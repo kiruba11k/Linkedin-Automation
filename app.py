@@ -46,7 +46,7 @@ def generate_state():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=16))
 
 def get_authorization_url():
-    """Generate updated LinkedIn OAuth 2.0 authorization URL"""
+    """Generate LinkedIn OAuth 2.0 authorization URL"""
     if not st.session_state.auth_state:
         st.session_state.auth_state = generate_state()
     
@@ -55,7 +55,7 @@ def get_authorization_url():
         "client_id": LINKEDIN_CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "state": st.session_state.auth_state,
-        "scope": "openid profile email w_member_social"
+        "scope": "openid profile email"  # Updated to OpenID Connect scopes
     }
     
     auth_url = f"https://www.linkedin.com/oauth/v2/authorization?{urlencode(params)}"
@@ -149,29 +149,13 @@ def get_user_info(access_token):
         return None, None
     
 def get_profile_urn(access_token):
-    """Get the URN of the authenticated user"""
-    profile_url = "https://api.linkedin.com/v2/me"
-    
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "X-Restli-Protocol-Version": "2.0.0"
-    }
-    
-    try:
-        response = requests.get(profile_url, headers=headers, timeout=30)
-        st.session_state.debug_info['profile_response'] = {
-            'status': response.status_code,
-            'text': response.text
-        }
-        
-        if response.status_code == 200:
-            return response.json().get("id")
-        else:
-            st.error(f"Error getting profile URN: {response.status_code} - {response.text}")
-            return None
-    except Exception as e:
-        st.error(f"Exception getting profile URN: {str(e)}")
-        return None
+    """Get the URN of the authenticated user using OpenID Connect"""
+    user_id, user_data = get_user_info(access_token)
+    if user_id:
+        # The URN format for OpenID Connect is different
+        # The 'sub' field contains the user ID in OpenID Connect
+        return f"urn:li:person:{user_id}"
+    return None
 
 def extract_linkedin_id(profile_url):
     """Extract profile ID from LinkedIn URL with better error handling"""
