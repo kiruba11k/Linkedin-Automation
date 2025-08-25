@@ -23,7 +23,7 @@ if 'auth_url' not in st.session_state:
 # LinkedIn API configuration
 LINKEDIN_CLIENT_ID = st.secrets.get("LINKEDIN_CLIENT_ID", "")
 LINKEDIN_CLIENT_SECRET = st.secrets.get("LINKEDIN_CLIENT_SECRET", "")
-REDIRECT_URI = "https://your-app-url.streamlit.app/"  # Update with your actual URL
+REDIRECT_URI = "https://lslinkedinbulk.streamlit.app/"  # Update with your actual URL
 
 def get_authorization_url():
     """Generate LinkedIn OAuth 2.0 authorization URL"""
