@@ -47,7 +47,7 @@ def generate_state():
     return ''.join(random.choices(string.ascii_letters + string.digits, k=16))
 
 def get_authorization_url():
-    """Generate LinkedIn OAuth 2.0 authorization URL"""
+    """Generate updated LinkedIn OAuth 2.0 authorization URL"""
     if not st.session_state.auth_state:
         st.session_state.auth_state = generate_state()
     
@@ -56,12 +56,12 @@ def get_authorization_url():
         "client_id": LINKEDIN_CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "state": st.session_state.auth_state,
-        "scope": "w_member_social w_messages r_liteprofile"
+        "scope": "openid profile email w_member_social"  # Updated scopes
     }
     
     auth_url = f"https://www.linkedin.com/oauth/v2/authorization?{urlencode(params)}"
     return auth_url
-
+    
 def get_access_token(authorization_code):
     """Exchange authorization code for access token"""
     token_url = "https://www.linkedin.com/oauth/v2/accessToken"
@@ -94,9 +94,63 @@ def get_access_token(authorization_code):
         st.error(f"Exception getting access token: {str(e)}")
         return None
 
+def create_ugc_post(access_token, user_urn, message_text):
+    """Create a UGC post instead of direct message"""
+    api_url = "https://api.linkedin.com/v2/ugcPosts"
+    
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "X-Restli-Protocol-Version": "2.0.0",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "author": f"urn:li:person:{user_urn}",
+        "lifecycleState": "PUBLISHED",
+        "specificContent": {
+            "com.linkedin.ugc.ShareContent": {
+                "shareCommentary": {
+                    "text": message_text
+                },
+                "shareMediaCategory": "NONE"
+            }
+        },
+        "visibility": {
+            "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
+        }
+    }
+    
+    try:
+        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        return response.status_code == 201, response.text
+    except Exception as e:
+        return False, str(e)
+        
+def get_user_info(access_token):
+    """Get user information using OpenID Connect endpoint"""
+    profile_url = "https://api.linkedin.com/v2/userinfo"
+    
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "X-Restli-Protocol-Version": "2.0.0"
+    }
+    
+    try:
+        response = requests.get(profile_url, headers=headers, timeout=30)
+        if response.status_code == 200:
+            user_data = response.json()
+            # The user ID is now in the 'sub' field
+            return user_data.get("sub"), user_data
+        else:
+            st.error(f"Error getting user info: {response.status_code} - {response.text}")
+            return None, None
+    except Exception as e:
+        st.error(f"Exception getting user info: {str(e)}")
+        return None, None
+    
 def get_profile_urn(access_token):
     """Get the URN of the authenticated user"""
-    profile_url = "https://api.linkedin.com/v2/me"
+    profile_url = "https://api.linkedin.com/v2/userinfo"
     
     headers = {
         "Authorization": f"Bearer {access_token}",
