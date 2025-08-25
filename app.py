@@ -9,7 +9,6 @@ import re
 # Set page configuration
 st.set_page_config(
     page_title="LinkedIn Bulk Message Sender",
-    page_icon="💼",
     layout="wide"
 )
 
@@ -56,7 +55,7 @@ def get_authorization_url():
         "client_id": LINKEDIN_CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "state": st.session_state.auth_state,
-        "scope": "openid profile email w_member_social"  # Updated scopes
+        "scope": ""openid profile email w_member_social""  # Updated scopes
     }
     
     auth_url = f"https://www.linkedin.com/oauth/v2/authorization?{urlencode(params)}"
