@@ -150,7 +150,7 @@ def get_user_info(access_token):
     
 def get_profile_urn(access_token):
     """Get the URN of the authenticated user"""
-    profile_url = "https://api.linkedin.com/v2/userinfo"
+    profile_url = "https://api.linkedin.com/v2/me"
     
     headers = {
         "Authorization": f"Bearer {access_token}",
