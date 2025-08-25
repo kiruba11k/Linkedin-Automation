@@ -226,9 +226,11 @@ def send_connection_request(access_token, profile_url, message_text):
     
     if recipient_urn == "PRIVATE_PROFILE" or not recipient_urn:
         # For private profiles, we can't send connection requests via API
-        return False, "Cannot send connection request to private profile via API"
+        # This is a limitation of LinkedIn's API - private profiles cannot be accessed
+        return False, "Private profile - cannot send connection request via API"
     
     # API endpoint for connection invitations
+    # Note: This API is restricted to approved partners only :cite[3]
     api_url = "https://api.linkedin.com/v2/invitation"
     
     headers = {
@@ -237,6 +239,9 @@ def send_connection_request(access_token, profile_url, message_text):
         "Content-Type": "application/json"
     }
     
+    # Trim message to LinkedIn's 300-character limit for connection messages
+    trimmed_message = message_text[:297] + "..." if len(message_text) > 300 else message_text
+    
     # Payload for connection request
     payload = {
         "invitee": {
@@ -244,7 +249,7 @@ def send_connection_request(access_token, profile_url, message_text):
                 "profileId": recipient_urn
             }
         },
-        "message": message_text
+        "message": trimmed_message
     }
     
     try:
@@ -257,13 +262,58 @@ def send_connection_request(access_token, profile_url, message_text):
         if response.status_code == 201:
             return True, "Connection request sent successfully"
         else:
+            # Check if this is an authorization error
+            error_data = response.json()
+            if "unauthorized_scope_error" in error_data.get("error", ""):
+                return False, "API access denied - need partner approval for invitation API"
             return False, f"Failed to send connection request: {response.text}"
     except Exception as e:
         return False, f"Exception sending connection request: {str(e)}"
 
+def handle_private_profile(access_token, profile_url, message_text, test_mode=False):
+    """
+    Handle private profiles with alternative approaches
+    Since we can't send connection requests to private profiles via API,
+    we provide alternative suggestions
+    """
+    if test_mode:
+        return True, "TEST MODE - Would use alternative approach for private profile"
+    
+    # Extract what information we can from the URL
+    profile_id = extract_linkedin_id(profile_url)
+    
+    # For private profiles, we can't send direct messages or connection requests
+    # Provide alternative strategies
+    alternative_strategies = [
+        "1. Try to find the person's email address for direct outreach",
+        "2. Engage with their content first to build familiarity",
+        "3. Look for mutual connections who could introduce you",
+        "4. If they work at a company, try company email format",
+        "5. Connect on other professional platforms where they might be active"
+    ]
+    
+    strategy_text = "Alternative approaches for private profile:\n" + "\n".join(alternative_strategies)
+    
+    return False, strategy_text
+
 def main():
     st.title("💼 LinkedIn Bulk Message Sender")
     st.markdown("Send personalized messages or connection requests to multiple LinkedIn profiles")
+    
+    # Add information about API limitations
+    with st.expander("ℹ️ Important Information About API Limitations"):
+        st.info("""
+        **LinkedIn API Restrictions:**
+        - Sending messages via API is restricted to 1st-degree connections only
+        - Connection invitation API is limited to approved partners :cite[3]
+        - Private profiles cannot be accessed via the standard API
+        - Consider using LinkedIn's partner platforms for full messaging capabilities :cite[10]
+        
+        **Current capabilities of this tool:**
+        - Send messages to existing connections
+        - Attempt connection requests for public profiles (with partner API access)
+        - Provide alternative strategies for private profiles
+        """)
     
     # Debug toggle
     debug_mode = st.sidebar.checkbox("Debug Mode", value=True)
@@ -320,12 +370,12 @@ def main():
                 
                 if access_token:
                     st.session_state.access_token = access_token
-                    st.success("Successfully authenticated with LinkedIn!")
+                    st.success("✅ Successfully authenticated with LinkedIn!")
                     st.rerun()
                 else:
-                    st.error(" Failed to get access token. Please try again.")
+                    st.error("❌ Failed to get access token. Please try again.")
     else:
-        st.success("Already authenticated with LinkedIn!")
+        st.success("✅ Already authenticated with LinkedIn!")
         if st.button("Logout"):
             st.session_state.access_token = None
             st.session_state.auth_code = None
@@ -373,7 +423,7 @@ def main():
                     st.error("CSV must contain 'profile_url' and 'message' columns")
                     return
                 
-                st.success(f"Successfully loaded {len(df)} recipients")
+                st.success(f"✅ Successfully loaded {len(df)} recipients")
                 st.dataframe(df.head())
                 
                 # Configuration options
@@ -383,7 +433,8 @@ def main():
                 with col1:
                     delay = st.slider("Delay between messages (seconds)", 5, 60, 15)
                     max_messages = st.number_input("Maximum messages to send", 1, 100, 10)
-                    send_connection_requests = st.checkbox("Send connection requests for private profiles", value=True)
+                    send_connection_requests = st.checkbox("Send connection requests for public profiles", value=True)
+                    provide_alternatives = st.checkbox("Provide alternative approaches for private profiles", value=True)
                 
                 with col2:
                     test_mode = st.checkbox("Test mode (don't actually send messages)", value=True)
@@ -424,14 +475,14 @@ def main():
                         
                         if recipient_urn == "PRIVATE_PROFILE":
                             # This is a private profile - can't message directly
-                            if send_connection_requests and not test_mode:
-                                # Try to send a connection request instead
-                                success, response = send_connection_request(
+                            if provide_alternatives:
+                                success, response = handle_private_profile(
                                     access_token, 
                                     row['profile_url'], 
-                                    row['message']
+                                    row['message'],
+                                    test_mode
                                 )
-                                action_type = "Connection Request"
+                                action_type = "Alternative Approach"
                             else:
                                 success, response = False, "Private profile - cannot message directly"
                                 action_type = "Message"
@@ -444,22 +495,34 @@ def main():
                             })
                             
                             if success:
-                                st.success(f"Connection request sent to {row['profile_url']}")
+                                st.success(f"✅ Alternative approach suggested for {row['profile_url']}")
                             else:
-                                st.error(f" Failed to send connection request to {row['profile_url']}: {response}")
+                                st.warning(f"⚠️ {response}")
                                 
                         elif recipient_urn:
+                            # This is a public profile
                             if test_mode:
                                 success, response = True, "TEST MODE - Message not sent"
                                 st.info(f"TEST: Would send to {row['profile_url']}")
                                 action_type = "Message"
                             else:
+                                # Try to send message first (if connected)
                                 success, response = send_message(
                                     access_token, 
                                     recipient_urn, 
                                     row['message']
                                 )
-                                action_type = "Message"
+                                
+                                if not success and "not connected" in response.lower() and send_connection_requests:
+                                    # If not connected, try to send connection request
+                                    success, response = send_connection_request(
+                                        access_token, 
+                                        row['profile_url'], 
+                                        row['message']
+                                    )
+                                    action_type = "Connection Request"
+                                else:
+                                    action_type = "Message"
                             
                             results.append({
                                 'profile_url': row['profile_url'],
@@ -469,9 +532,9 @@ def main():
                             })
                             
                             if success:
-                                st.success(f" Message sent to {row['profile_url']}")
+                                st.success(f" {action_type} sent to {row['profile_url']}")
                             else:
-                                st.error(f" Failed to send to {row['profile_url']}: {response}")
+                                st.error(f" Failed to send {action_type.lower()} to {row['profile_url']}: {response}")
                         else:
                             results.append({
                                 'profile_url': row['profile_url'],
@@ -479,7 +542,7 @@ def main():
                                 'action': 'Message',
                                 'response': 'Could not resolve profile URN'
                             })
-                            st.error(f"Could not resolve URN for {row['profile_url']}")
+                            st.error(f" Could not resolve URN for {row['profile_url']}")
                         
                         # Delay between messages to respect rate limits
                         if not test_mode:
