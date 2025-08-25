@@ -55,12 +55,13 @@ def get_authorization_url():
         "client_id": LINKEDIN_CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "state": st.session_state.auth_state,
-        "scope": ""openid profile email w_member_social""  # Updated scopes
+        "scope": "openid profile email w_member_social"
     }
     
     auth_url = f"https://www.linkedin.com/oauth/v2/authorization?{urlencode(params)}"
     return auth_url
-    
+
+
 def get_access_token(authorization_code):
     """Exchange authorization code for access token"""
     token_url = "https://www.linkedin.com/oauth/v2/accessToken"
