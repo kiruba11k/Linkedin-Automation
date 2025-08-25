@@ -9,6 +9,7 @@ import re
 # Set page configuration
 st.set_page_config(
     page_title="LinkedIn Bulk Message Sender",
+    page_icon="💼",
     layout="wide"
 )
 
@@ -27,7 +28,17 @@ if 'debug_info' not in st.session_state:
 # LinkedIn API configuration
 LINKEDIN_CLIENT_ID = st.secrets.get("LINKEDIN_CLIENT_ID", "")
 LINKEDIN_CLIENT_SECRET = st.secrets.get("LINKEDIN_CLIENT_SECRET", "")
-REDIRECT_URI = "https://lslinkedinbulk.streamlit.app/"
+# Use the current app URL as redirect URI
+current_url = st.secrets.get("REDIRECT_URI", "")
+if not current_url:
+    # Try to get the current URL from query params or use a default
+    query_params = st.query_params
+    if '_st' in query_params:
+        current_url = f"https://{query_params['_st'].split('.')[0]}.streamlit.app/"
+    else:
+        current_url = "https://lslinkedinbulk.streamlit.app/"
+
+REDIRECT_URI = current_url
 
 # Generate a random state for CSRF protection
 def generate_state():
@@ -196,18 +207,22 @@ def send_message(access_token, recipient_urn, message_text):
         return False, str(e)
 
 def main():
-    st.title(" LinkedIn Bulk Message Sender")
+    st.title("💼 LinkedIn Bulk Message Sender")
     st.markdown("Send personalized messages to multiple LinkedIn connections")
     
     # Debug toggle
-    debug_mode = st.sidebar.checkbox("Debug Mode", value=False)
+    debug_mode = st.sidebar.checkbox("Debug Mode", value=True)
+    
+    # Display current URL for debugging
+    if debug_mode:
+        st.sidebar.write("Current URL:", st.query_params)
+        st.sidebar.write("Redirect URI:", REDIRECT_URI)
     
     # Check if credentials are configured
     if not LINKEDIN_CLIENT_ID or not LINKEDIN_CLIENT_SECRET:
         st.error("""
         LinkedIn API credentials not configured. Please:
         1. Add your LinkedIn Client ID and Client Secret to Streamlit secrets
-        2. Update the REDIRECT_URI variable with your app's URL
         """)
         
         if debug_mode:
@@ -215,6 +230,15 @@ def main():
             st.write("Current Client Secret:", "****" if LINKEDIN_CLIENT_SECRET else "Not set")
         
         return
+    
+    # Check if we're returning from OAuth redirect
+    query_params = st.query_params
+    if 'code' in query_params and 'state' in query_params:
+        if query_params['state'] == st.session_state.get('auth_state', ''):
+            st.session_state.auth_code = query_params['code']
+            # Clear the query params to avoid processing again on refresh
+            st.query_params.clear()
+            st.rerun()
     
     # Authentication section
     st.header("Step 1: Authenticate with LinkedIn")
@@ -226,18 +250,13 @@ def main():
         st.markdown(f"""
         1. [Click here to authenticate with LinkedIn]({st.session_state.auth_url})
         2. After authenticating, you'll be redirected back to this app
-        3. Copy the authorization code from the URL and paste it below
+        3. The authorization code will be automatically processed
         """)
         
-        # Check if we have a code in the URL (for redirect back)
-        query_params = st.query_params
-        if 'code' in query_params and 'state' in query_params:
-            if query_params['state'] == st.session_state.auth_state:
-                st.session_state.auth_code = query_params['code']
-                # Clear the query params
-                st.query_params.clear()
-        
-        auth_code = st.text_input("Paste authorization code here:", value=st.session_state.auth_code or "")
+        # Manual code input as fallback
+        st.markdown("---")
+        st.markdown("**Alternatively, if automatic processing fails:**")
+        auth_code = st.text_input("Paste authorization code here manually:")
         
         if auth_code:
             st.session_state.auth_code = auth_code
@@ -246,17 +265,17 @@ def main():
                 
                 if access_token:
                     st.session_state.access_token = access_token
-                    st.success("Successfully authenticated with LinkedIn!")
+                    st.success("✅ Successfully authenticated with LinkedIn!")
+                    st.rerun()
                 else:
-                    st.error(" Failed to get access token. Please try again.")
+                    st.error("❌ Failed to get access token. Please try again.")
     else:
-        st.success("Already authenticated with LinkedIn!")
+        st.success("✅ Already authenticated with LinkedIn!")
         if st.button("Logout"):
             st.session_state.access_token = None
             st.session_state.auth_code = None
             st.session_state.auth_url = None
             st.session_state.auth_state = None
-            st.query_params.clear()
             st.rerun()
     
     # Only show the rest of the app if authenticated
@@ -299,7 +318,7 @@ def main():
                     st.error("CSV must contain 'profile_url' and 'message' columns")
                     return
                 
-                st.success(f" Successfully loaded {len(df)} recipients")
+                st.success(f"✅ Successfully loaded {len(df)} recipients")
                 st.dataframe(df.head())
                 
                 # Configuration options
@@ -365,16 +384,16 @@ def main():
                             })
                             
                             if success:
-                                st.success(f" Message sent to {row['profile_url']}")
+                                st.success(f"✅ Message sent to {row['profile_url']}")
                             else:
-                                st.error(f" Failed to send to {row['profile_url']}: {response}")
+                                st.error(f"❌ Failed to send to {row['profile_url']}: {response}")
                         else:
                             results.append({
                                 'profile_url': row['profile_url'],
                                 'status': 'Failed',
                                 'response': 'Could not resolve profile URN'
                             })
-                            st.error(f" Could not resolve URN for {row['profile_url']}")
+                            st.error(f"❌ Could not resolve URN for {row['profile_url']}")
                         
                         # Delay between messages to respect rate limits
                         if not test_mode:
@@ -388,7 +407,8 @@ def main():
                     # Calculate success rate
                     success_count = len(results_df[results_df['status'] == 'Success'])
                     total_count = len(results_df)
-                    st.metric("Success Rate", f"{success_count}/{total_count} ({success_count/total_count*100:.1f}%)")
+                    if total_count > 0:
+                        st.metric("Success Rate", f"{success_count}/{total_count} ({success_count/total_count*100:.1f}%)")
                     
                     # Provide download link for results
                     csv = results_df.to_csv(index=False)
